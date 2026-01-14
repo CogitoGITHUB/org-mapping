@@ -4,7 +4,7 @@
 ;; Copyright (C) 2020-2025 D. Williams, sabof
 ;; Author: CogitoGITHUB, D. Williams <d.williams@posteo.net>
 ;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1") (org "9.0") (svg-lib "0.2"))
+;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: outlines, convenience, org, svg, faces
 ;; URL: https://github.com/CogitoGITHUB/org-face
 
@@ -20,7 +20,8 @@
 
 ;;; Commentary:
 
-;; org-face provides a comprehensive modern visual interface for Org Mode:
+;; org-face provides a comprehensive modern visual interface for Org Mode
+;; with NO external dependencies - completely self-contained:
 ;;
 ;; Features:
 ;; - Beautiful SVG tags for keywords and code blocks
@@ -29,21 +30,148 @@
 ;; - Interactive buttons for code execution
 ;; - Clean, distraction-free layout
 ;; - Special TODO item styling
+;; - 100% self-contained (no requires)
 ;;
 ;; Quick start:
-;;   (require 'org-face)
+;;   (load-file "org-face.el")
 ;;   (add-hook 'org-mode-hook #'org-face-mode)
 
 ;;; Code:
-
-(require 'org)
-(require 'svg-lib)
-(require 'org-element)
 
 (defgroup org-face nil
   "Modern visual interface for Org Mode."
   :group 'org
   :prefix "org-face-")
+
+;;; ============================================================================
+;;; SVG Generation - Raw XML Construction
+;;; ============================================================================
+
+(defun org-face--svg-escape (text)
+  "Escape TEXT for use in SVG."
+  (replace-regexp-in-string
+   "&" "&amp;"
+   (replace-regexp-in-string
+    "<" "&lt;"
+    (replace-regexp-in-string
+     ">" "&gt;"
+     (replace-regexp-in-string
+      "\"" "&quot;"
+      text)))))
+
+(defun org-face--color-luminance (color)
+  "Calculate relative luminance of COLOR."
+  (if (and color (not (string= color "unspecified-bg")) (not (string= color "unspecified-fg")))
+      (let* ((rgb (color-name-to-rgb color))
+             (r (or (nth 0 rgb) 0))
+             (g (or (nth 1 rgb) 0))
+             (b (or (nth 2 rgb) 0)))
+        (+ (* 0.299 r) (* 0.587 g) (* 0.114 b)))
+    0.5))
+
+(defun org-face--contrast-color (color)
+  "Return black or white depending on COLOR luminance."
+  (if (> (org-face--color-luminance color) 0.5)
+      "#000000"
+    "#FFFFFF"))
+
+(defun org-face--make-svg-tag (text &rest args)
+  "Create SVG tag image displaying TEXT.
+Optional ARGS:
+  :foreground COLOR - text color
+  :background COLOR - background color
+  :stroke WIDTH - border width
+  :font-weight WEIGHT - font weight
+  :font-size SIZE - font size
+  :padding PADDING - internal padding
+  :radius RADIUS - corner radius
+  :inverse BOOL - swap foreground/background"
+  (let* ((foreground (or (plist-get args :foreground) "#000000"))
+         (background (or (plist-get args :background) "#FFFFFF"))
+         (stroke (or (plist-get args :stroke) 2))
+         (font-weight (or (plist-get args :font-weight) "normal"))
+         (font-size (or (plist-get args :font-size) 11))
+         (padding (or (plist-get args :padding) 4))
+         (radius (or (plist-get args :radius) 3))
+         (inverse (plist-get args :inverse))
+         (fg (if inverse background foreground))
+         (bg (if inverse foreground background))
+         (text-width (* (length text) 7))
+         (width (+ text-width (* 2 padding)))
+         (height (+ font-size (* 2 padding)))
+         (text-x (+ padding 2))
+         (text-y (+ padding font-size -2))
+         (svg-data
+          (format
+           "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\">
+  <rect x=\"0\" y=\"0\" width=\"%d\" height=\"%d\" 
+        rx=\"%d\" ry=\"%d\"
+        fill=\"%s\" 
+        stroke=\"%s\" 
+        stroke-width=\"%d\"/>
+  <text x=\"%d\" y=\"%d\" 
+        font-family=\"monospace\" 
+        font-size=\"%d\" 
+        font-weight=\"%s\" 
+        fill=\"%s\">%s</text>
+</svg>"
+           width height
+           width height
+           radius radius
+           bg
+           fg
+           stroke
+           text-x text-y
+           font-size
+           font-weight
+           fg
+           (org-face--svg-escape text))))
+    (create-image svg-data 'svg t :ascent 'center)))
+
+;;; ============================================================================
+;;; Org Element Integration
+;;; ============================================================================
+
+(defvar org-heading-regexp)
+(defvar org-odd-levels-only)
+(defvar org-hide-leading-stars)
+
+(declare-function org-at-heading-p "org" (&optional _))
+(declare-function org-in-item-p "org-list" ())
+(declare-function org-in-src-block-p "org" (&optional inside))
+(declare-function org-at-table-p "org-table" (&optional table-type))
+(declare-function org-get-todo-state "org" ())
+(declare-function org-with-limited-levels "org-macs" (&rest body))
+(declare-function org-ctrl-c-ctrl-c "org" (&optional arg))
+(declare-function org-redisplay-inline-images "org" ())
+(declare-function org-babel-execute-buffer "ob-core" (&optional arg))
+(declare-function org-html-export-to-html "ox-html" (&optional async subtreep visible-only body-only ext-plist))
+(declare-function org-hide-block-all "org" ())
+(declare-function org-show-all "org" (&optional types))
+(declare-function org-indent-mode "org-indent" (&optional arg))
+
+(defun org-face--at-heading-p ()
+  "Return non-nil if point is at an org heading."
+  (and (bolp)
+       (looking-at org-heading-regexp)))
+
+(defun org-face--list-in-valid-context-p ()
+  "Return non-nil if point is in a valid list context."
+  (condition-case nil
+      (and (fboundp 'org-in-item-p)
+           (org-in-item-p)
+           (not (and (fboundp 'org-in-src-block-p) (org-in-src-block-p)))
+           (not (and (fboundp 'org-at-table-p) (org-at-table-p))))
+    (error nil)))
+
+(defun org-face--get-todo-state ()
+  "Get TODO state at point."
+  (condition-case nil
+      (when (and (fboundp 'org-get-todo-state)
+                 (org-face--at-heading-p))
+        (org-get-todo-state))
+    (error nil)))
 
 ;;; ============================================================================
 ;;; Customization - Display Settings
@@ -169,12 +297,18 @@ This creates a cleaner appearance but removes indentation."
 
 (defun org-face--face-attribute (face attribute)
   "Get ATTRIBUTE from FACE, falling back to org-face-default."
-  (cond ((facep face)
-         (face-attribute face attribute nil 'default))
-        ((and (stringp face) (eq attribute :foreground))
-         face)
-        ((plist-get face attribute))
-        (t (face-attribute 'org-face-default attribute nil 'default))))
+  (let ((value (cond 
+                ((facep face)
+                 (face-attribute face attribute nil 'default))
+                ((and (stringp face) (eq attribute :foreground))
+                 face)
+                ((plist-get face attribute))
+                (t (face-attribute 'org-face-default attribute nil 'default)))))
+    (if (or (eq value 'unspecified)
+            (string= value "unspecified-bg")
+            (string= value "unspecified-fg"))
+        (if (eq attribute :foreground) "#000000" "#FFFFFF")
+      value)))
 
 (defun org-face--plist-delete (plist property)
   "Remove PROPERTY from PLIST."
@@ -198,19 +332,12 @@ This creates a cleaner appearance but removes indentation."
          (args (org-face--plist-delete args 'inverse))
          (args (org-face--plist-delete args 'beg))
          (args (org-face--plist-delete args 'end)))
-    (if inverse
-        (apply #'svg-lib-tag (substring text beg end) nil
-               :stroke 0
-               :font-weight 'semibold
-               :foreground background
-               :background foreground
-               args)
-      (apply #'svg-lib-tag (substring text beg end) nil
-             :stroke 2
-             :font-weight 'regular
-             :foreground foreground
-             :background background
-             args))))
+    (apply #'org-face--make-svg-tag 
+           (substring text beg end)
+           :foreground foreground
+           :background background
+           :inverse inverse
+           args)))
 
 ;;; ============================================================================
 ;;; SVG Tags - Definitions
@@ -218,21 +345,25 @@ This creates a cleaner appearance but removes indentation."
 
 (defcustom org-face-tags
   '(("^#\\+begin_src\\( [a-zA-Z0-9\-]+\\)"
-     (lambda (tag) (org-face-make-tag (upcase tag) :face 'org-meta-line :crop-left t)))
+     (lambda (tag) (org-face-make-tag (upcase tag) :face 'org-meta-line)))
     
     ("^#\\+begin_src"
-     (lambda (_) (org-face-make-tag "RUN" :face 'org-meta-line :inverse t :crop-right t))
-     (lambda () (interactive) (org-ctrl-c-ctrl-c) (org-redisplay-inline-images))
+     (lambda (_) (org-face-make-tag "RUN" :face 'org-meta-line :inverse t))
+     (lambda () (interactive) 
+       (when (fboundp 'org-ctrl-c-ctrl-c)
+         (org-ctrl-c-ctrl-c))
+       (when (fboundp 'org-redisplay-inline-images)
+         (org-redisplay-inline-images)))
      "Execute code block")
     
     ("^#\\+end_src"
      (lambda (_) (org-face-make-tag "END" :face 'org-meta-line)))
     
     ("^#\\+begin_export\\( [a-zA-Z0-9\-]+\\)"
-     (lambda (tag) (org-face-make-tag (upcase tag) :face 'org-meta-line :crop-left t)))
+     (lambda (tag) (org-face-make-tag (upcase tag) :face 'org-meta-line)))
     
     ("^#\\+begin_export"
-     (lambda (_) (org-face-make-tag "EXPORT" :face 'org-meta-line :inverse t :crop-right t)))
+     (lambda (_) (org-face-make-tag "EXPORT" :face 'org-meta-line :inverse t)))
     
     ("^#\\+end_export"
      (lambda (_) (org-face-make-tag "END" :face 'org-meta-line)))
@@ -248,12 +379,16 @@ This creates a cleaner appearance but removes indentation."
     
     ("|RUN ALL|"
      (lambda (_) (org-face-make-tag "RUN ALL" :face 'org-meta-line))
-     (lambda () (interactive) (org-babel-execute-buffer))
+     (lambda () (interactive) 
+       (when (fboundp 'org-babel-execute-buffer)
+         (org-babel-execute-buffer)))
      "Execute all code blocks")
     
     ("|EXPORT|"
      (lambda (_) (org-face-make-tag "EXPORT" :face 'org-meta-line))
-     (lambda () (interactive) (org-html-export-to-html))
+     (lambda () (interactive) 
+       (when (fboundp 'org-html-export-to-html)
+         (org-html-export-to-html)))
      "Export to HTML"))
   "SVG tag definitions for org-face."
   :type '(repeat (list regexp function (choice function (const nil)) (choice string (const nil))))
@@ -284,14 +419,16 @@ This creates a cleaner appearance but removes indentation."
 
 (defun org-face--plain-list-p ()
   "Return non-nil if at a valid plain list."
-  (save-match-data
-    (org-list-in-valid-context-p)))
+  (org-face--list-in-valid-context-p))
 
 (defun org-face--headline-p ()
   "Return non-nil if at a valid headline."
   (save-match-data
-    (org-with-limited-levels
-     (and (org-at-heading-p) t))))
+    (condition-case nil
+        (when (fboundp 'org-with-limited-levels)
+          (org-with-limited-levels
+           (and (org-face--at-heading-p) t)))
+      (error nil))))
 
 (defun org-face--graphic-p ()
   "Return non-nil if display supports graphics."
@@ -308,7 +445,9 @@ This creates a cleaner appearance but removes indentation."
 (defun org-face--get-bullet (&optional level)
   "Get bullet character for LEVEL."
   (let* ((level (or level (org-face--heading-level)))
-         (n (if org-odd-levels-only (/ (1- level) 2) (1- level)))
+         (n (if (and (boundp 'org-odd-levels-only) org-odd-levels-only)
+                (/ (1- level) 2) 
+              (1- level)))
          (len (length org-face-headline-bullets)))
     (if org-face-cycle-bullets
         (elt org-face-headline-bullets (% n len))
@@ -317,8 +456,7 @@ This creates a cleaner appearance but removes indentation."
 (defun org-face--get-todo-bullet ()
   "Get TODO item bullet if defined."
   (when org-face-special-todo-items
-    (let* ((todo-kw (save-match-data
-                      (cdar (org-entry-properties (match-beginning 0) "TODO"))))
+    (let* ((todo-kw (org-face--get-todo-state))
            (bullet (cdr (assoc todo-kw org-face-todo-bullets))))
       (when (and (stringp todo-kw) bullet)
         bullet))))
@@ -398,9 +536,9 @@ This creates a cleaner appearance but removes indentation."
   (mapc #'delete-overlay org-face--heading-overlays)
   (setq org-face--heading-overlays nil))
 
-(defun org-face--recenter-headings ()
+(defun org-face--recenter-headings (&rest _)
   "Recenter headings after window size change."
-  (when org-face-mode
+  (when (and (boundp 'org-face-mode) org-face-mode)
     (org-face--center-all-headings)))
 
 ;;; ============================================================================
@@ -420,7 +558,7 @@ This creates a cleaner appearance but removes indentation."
           
           ("^\\(?3:\\(?4:\\*?\\)\\**?\\(?2:\\*?\\)\\)\\(?1:\\*\\) "
            (1 (org-face--prettify-main-bullet) prepend)
-           ,@(unless (or org-hide-leading-stars
+           ,@(unless (or (and (boundp 'org-hide-leading-stars) org-hide-leading-stars)
                          org-face-remove-leading-stars)
                '((3 (org-face--prettify-leading-bullets) t)))
            ,@(when org-face-remove-leading-stars
@@ -435,15 +573,17 @@ This creates a cleaner appearance but removes indentation."
   "Configure buffer layout."
   (setq-local fill-column org-face-body-width)
   (visual-line-mode 1)
-  (org-indent-mode 1)
+  (when (fboundp 'org-indent-mode)
+    (org-indent-mode 1))
   
   (when org-face-inline-images
     (setq-local org-image-actual-width 
                 `(,(truncate (* (frame-pixel-width) 0.85))))
     (setq-local org-startup-with-inline-images t)
-    (org-redisplay-inline-images))
+    (when (fboundp 'org-redisplay-inline-images)
+      (org-redisplay-inline-images)))
   
-  (when org-face-hide-blocks
+  (when (and org-face-hide-blocks (fboundp 'org-hide-block-all))
     (org-hide-block-all)))
 
 (defun org-face--fontify-buffer ()
@@ -474,8 +614,6 @@ This creates a cleaner appearance but removes indentation."
   (org-face--fontify-buffer)
   (org-face--center-all-headings)
   
-  (add-hook 'org-babel-after-execute-hook 
-            #'org-redisplay-inline-images nil t)
   (add-hook 'window-size-change-functions
             #'org-face--recenter-headings nil t)
   
@@ -491,15 +629,14 @@ This creates a cleaner appearance but removes indentation."
   (org-face--remove-heading-overlays)
   (org-face--fontify-buffer)
   
-  (remove-hook 'org-babel-after-execute-hook
-               #'org-redisplay-inline-images t)
   (remove-hook 'window-size-change-functions
                #'org-face--recenter-headings t)
   
-  (when org-face-hide-blocks
+  (when (and org-face-hide-blocks (fboundp 'org-show-all))
     (org-show-all))
   
-  (org-indent-mode -1)
+  (when (fboundp 'org-indent-mode)
+    (org-indent-mode -1))
   (visual-line-mode -1)
   
   (message "org-face mode disabled"))
